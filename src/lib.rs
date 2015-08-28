@@ -31,6 +31,9 @@
 #![feature(reflect_marker)]
 #![feature(rc_weak)]
 #![feature(rt)]
+#![feature(fnbox)]
+#![feature(libc)]
+#![feature(box_raw)]
 #![warn(missing_docs)]
 
 extern crate spin;
@@ -54,14 +57,14 @@ use mio::util::Slab;
 
 use std::collections::VecDeque;
 use spin::Mutex;
-use std::sync::{Arc};
+use std::sync::Arc;
+use std::boxed::FnBox;
 
 use bit_vec::BitVec;
 
 use time::{SteadyTime, Duration};
 
 use context::{Context, Stack};
-use context::thunk::Thunk;
 use std::rt::unwind::try;
 
 /// Read/Write/Both
@@ -364,40 +367,12 @@ impl Coroutine {
             stack: Stack::new(1024 * 1024),
         };
 
-        let coroutine_ref = Rc::new(RefCell::new(coroutine));
+        extern "C" fn init_fn(arg: usize, f: *mut context::context::libc::c_void) -> ! {
+            let func: Box<Box<FnBox()>> = unsafe {
+                Box::from_raw(f as *mut Box<FnBox()>)
+            };
 
-        struct SendFnOnce<F>
-        {
-            f : F
-        }
-
-        // We fake the `Send` because `mioco` guarantees serialized
-        // execution between coroutines, switching between them
-        // only in predefined points.
-        unsafe impl<F> Send for SendFnOnce<F>
-            where F : FnOnce(&mut MiocoHandle) -> io::Result<()> + 'static
-            {
-
-            }
-
-        struct SendRefCoroutine {
-            coroutine: RefCoroutine,
-        }
-
-        // Same logic as in `SendFnOnce` applies here.
-        unsafe impl Send for SendRefCoroutine { }
-
-        let sendref = SendRefCoroutine {
-            coroutine: coroutine_ref.clone(),
-        };
-
-        let send_f = SendFnOnce {
-            f: f,
-        };
-
-        extern "C" fn init_fn(arg: usize, f: *mut ()) -> ! {
-            let func: Box<Thunk<(), _>> = unsafe { transmute(f) };
-            if let Err(cause) = unsafe { try(move|| func.invoke(())) } {
+            if let Err(cause) = unsafe { try(move|| func()) } {
                 error!("Panicked inside: {:?}", cause.downcast::<&str>());
             }
 
@@ -408,6 +383,9 @@ impl Coroutine {
 
             unreachable!();
         }
+
+        let coroutine_ref = Rc::new(RefCell::new(coroutine));
+        let coroutine_ref_inner = coroutine_ref.clone();
 
         {
             let Coroutine {
@@ -420,23 +398,21 @@ impl Coroutine {
             context.init_with(
                 init_fn,
                 unsafe { transmute(&server_shared.borrow_mut().context as *const Context) },
-                move || {
+                Box::new(move || {
                     trace!("Coroutine: started");
                     let mut mioco_handle = MiocoHandle {
-                        coroutine: sendref.coroutine,
+                        coroutine: coroutine_ref_inner.clone(),
                         timer: None,
                     };
 
                     // Guard to perform cleanup in case of panic
-                    let mut guard = CoroutineGuard::new(mioco_handle.coroutine.clone());
-
-                    let SendFnOnce { f } = send_f;
+                    let mut guard = CoroutineGuard::new(coroutine_ref_inner);
 
                     let res = f(&mut mioco_handle);
 
                     guard.finish(res);
                     trace!("Coroutine: finished");
-                },
+                }),
                 stack,
                 );
         }

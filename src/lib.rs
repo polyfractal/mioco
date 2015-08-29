@@ -32,7 +32,6 @@
 #![feature(rc_weak)]
 #![feature(rt)]
 #![feature(fnbox)]
-#![feature(libc)]
 #![feature(box_raw)]
 #![warn(missing_docs)]
 
@@ -44,6 +43,7 @@ extern crate nix;
 extern crate log;
 extern crate bit_vec;
 extern crate time;
+extern crate libc;
 
 use std::cell::RefCell;
 use std::rc::{Rc, Weak};
@@ -367,7 +367,7 @@ impl Coroutine {
             stack: Stack::new(1024 * 1024),
         };
 
-        extern "C" fn init_fn(arg: usize, f: *mut context::context::libc::c_void) -> ! {
+        extern "C" fn init_fn(arg: usize, f: *mut libc::c_void) -> ! {
             let func: Box<Box<FnBox()>> = unsafe {
                 Box::from_raw(f as *mut Box<FnBox()>)
             };
@@ -378,10 +378,7 @@ impl Coroutine {
 
             let ctx: &Context = unsafe { transmute(arg) };
 
-            let mut dummy = Context::empty();
-            Context::swap(&mut dummy, ctx);
-
-            unreachable!();
+            Context::load(ctx);
         }
 
         let coroutine_ref = Rc::new(RefCell::new(coroutine));

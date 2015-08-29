@@ -27,6 +27,7 @@ env_logger = "*"
 spin = "*"
 time = "*"
 context = "*"
+libc = "*"
 
 # mio = "0.4.*"
 [dependencies.mio]

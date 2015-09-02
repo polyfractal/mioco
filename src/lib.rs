@@ -54,6 +54,8 @@ use std::io;
 use std::mem::transmute;
 
 use mio::{TryRead, TryWrite, Token, EventLoop, EventSet};
+use mio::tcp::{TcpSocket, TcpStream};
+use std::net::SocketAddr;
 use std::any::Any;
 use std::marker::{PhantomData, Reflect};
 use mio::util::Slab;
@@ -853,6 +855,33 @@ where T : mio::TryAccept+Reflect+'static {
                 Err(e) => {
                     return Err(e)
                 }
+            }
+        }
+    }
+}
+
+impl EventSource<TcpSocket> {
+
+    pub fn connect(self, addr: SocketAddr) -> io::Result<TcpStream> {
+
+        let mut inn = self.inn.borrow_mut();
+        let sock: &TcpSocket = inn.io.as_any_mut().downcast_mut::<TcpSocket>().unwrap();
+
+        // Problem is here, TcpSocket.connect() consumes itself and returns a stream,
+        // but the socket is borrowed from the RC<RefCell<>> above.  I dunno how to fix :(
+        let (stream, complete) = try!(sock.connect(&addr));
+
+        if complete {
+            return Ok(stream);
+        }
+        
+        self.block_on(RW::Write);
+
+        return {
+            let mut inn = self.inn.borrow_mut();
+            match inn.io.as_any_mut().downcast_mut::<TcpSocket>().unwrap().take_socket_error() {
+                Ok(_) => Ok(stream),
+                Err(e) => Err(e)
             }
         }
     }
